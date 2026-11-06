@@ -165,13 +165,33 @@ def load_pm20(file, pm_version=2):
     return pm
 
 
+material_dict_root = None
+
 def init_material_dict(root_path):
-    global material_dict
+    global material_dict, material_dict_root
     material_dict = dict()
+    material_dict_root = root_path
     for (dirpath, dirnames, filenames) in os.walk(root_path):
         for name in filenames:
-            mat_name = name[:-4]
-            material_dict[mat_name] = dirpath
+            mat_name, ext = os.path.splitext(name)
+            # game files mix .dds/.DDS and texture names don't match file case
+            if ext.lower() == ".dds":
+                material_dict[mat_name.lower()] = os.path.join(dirpath, name)
+
+def find_materials_path(filename, prefs_path):
+    """The preference wins; otherwise look for data/material beside the data/gfx the pmg came from."""
+    if prefs_path:
+        return bpy.path.abspath(prefs_path)
+    path = os.path.dirname(os.path.abspath(filename))
+    while True:
+        candidate = os.path.join(path, "material")
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(path)
+        if parent == path:
+            return None
+        path = parent
+
 
 # Mabinogi is Y up with models facing -Z; Blender is Z up with models facing -Y
 Y_UP_TO_Z_UP = (mathutils.Matrix.Rotation(math.radians(180), 4, 'Z') @
@@ -230,8 +250,12 @@ def load_pmg(filename,
         pm_subgroups.append(pm)
 
     addon_prefs = context.preferences.addons[__name__].preferences
-    if material_dict is None:
-        init_material_dict(addon_prefs.materials_path)
+    materials_path = find_materials_path(filename, addon_prefs.materials_path)
+    if materials_path is None:
+        print("No material folder found, set one in the addon preferences")
+        materials_path = os.path.dirname(filename)
+    if material_dict is None or material_dict_root != materials_path:
+        init_material_dict(materials_path)
 
     #find if the selected object is a an armature
     bone_space = mathutils.Matrix(((0, 1, 0, 0),
@@ -273,13 +297,14 @@ def load_pmg(filename,
             #image = load_image(name + ".dds", os.path.dirname(filename), recursive=True, place_holder=True)
             if name not in bpy.data.materials:
                 print("LOADING TEXTURE ", name)
-                if name in material_dict:
-                    image = load_image(name + ".dds", material_dict[name], recursive=True, place_holder=True)
+                if not name:
+                    image = None # untextured mesh
+                elif name.lower() in material_dict:
+                    image = bpy.data.images.load(material_dict[name.lower()], check_existing=True)
                 else:
+                    print("Texture %s not found" % name)
                     image = load_image(name + ".dds", os.path.dirname(filename), recursive=True, place_holder=True)
                 print(image)
-                texture = bpy.data.textures.new(name=name, type='IMAGE')
-                texture.image = image
                 # Create new material
                 material = bpy.data.materials.new(name=name)
                 material.use_nodes = True
@@ -291,15 +316,15 @@ def load_pmg(filename,
                 # Add mat node
                 bsdf = material.node_tree.nodes["Principled BSDF"]
                 bsdf.inputs['Roughness'].default_value = 0
-                # Add tex node
-                texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
-                texImage.image = image
-                # Link together
-                material.node_tree.links.new(bsdf.inputs['Base Color'], texImage.outputs['Color'])
-                material.node_tree.links.new(bsdf.inputs['Alpha'], texImage.outputs['Alpha'])
+                if image is not None:
+                    # Add tex node
+                    texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
+                    texImage.image = image
+                    # Link together
+                    material.node_tree.links.new(bsdf.inputs['Base Color'], texImage.outputs['Color'])
+                    material.node_tree.links.new(bsdf.inputs['Alpha'], texImage.outputs['Alpha'])
             else:
                 material = bpy.data.materials[name]
-                image = bpy.data.images[name + ".dds"]
                 
             bmesh.materials.append(material)
             #add textures
@@ -431,6 +456,7 @@ class IMPORT_MABINOGI_pmg_prefs(AddonPreferences):
     
     materials_path: StringProperty(
         name="Path to materials:",
+        description="Folder searched for textures. Leave empty to use the data/material folder next to the imported file",
         subtype='DIR_PATH'
     )
 
