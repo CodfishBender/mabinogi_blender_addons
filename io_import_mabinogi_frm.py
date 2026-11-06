@@ -310,13 +310,13 @@ def save_frm(filename,
         save_matrix4x4(file, m1)
         save_matrix4x4(file, m2)
         if bones[b].parent == None:
-            parentid = -1
+            parentid = 255 # no parent
             m3 = bones[b].matrix
         else:
             parentid = bones.index(bones[b].parent)
             m3 = mathutils.Matrix.Translation(bones[b].parent.head - bones[b].tail)
         save_matrix4x4(file, m3)
-        file.write(struct.pack("<32sbbh",bones[b].name.encode("utf-8"), b, parentid, 0))
+        file.write(struct.pack("<32sBBh",bones[b].name.encode("utf-8"), b, parentid, 0))
         save_quaternion(file,[0,0,0,1])
         save_quaternion(file,list(bones[b].tail[:]) + [1])
         hash.AddKey(bones[b].name[1:])
