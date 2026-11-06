@@ -437,17 +437,32 @@ class IMPORT_MABINOGI_pmg_prefs(AddonPreferences):
 def menu_func_mabinogi_pmg(self, context):
     self.layout.operator(IMPORT_MABINOGI_pmg.bl_idname, text="Mabinogi Mesh Group (.pmg)")
 
+class VIEW3D_PT_mabinogi_import_pmg(bpy.types.Panel):
+    '''Import button in the 3D viewport sidebar's Mabinogi tab.'''
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Mabinogi"
+    bl_label = "Import Mesh Group (.pmg)"
+    # no header, so the buttons from each Mabinogi addon stack into one list
+    bl_options = {'HIDE_HEADER'}
+    bl_order = 1
+
+    def draw(self, context):
+        self.layout.operator(IMPORT_MABINOGI_pmg.bl_idname, text="Import Mesh Group (.pmg)", icon='MESH_DATA')
+
 def register():
     from bpy.utils import register_class
     global material_dict
     material_dict = None
     register_class(IMPORT_MABINOGI_pmg)
     register_class(IMPORT_MABINOGI_pmg_prefs)
+    register_class(VIEW3D_PT_mabinogi_import_pmg)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_mabinogi_pmg)
 
 
 def unregister():
     from bpy.utils import unregister_class
+    unregister_class(VIEW3D_PT_mabinogi_import_pmg)
     unregister_class(IMPORT_MABINOGI_pmg)
     unregister_class(IMPORT_MABINOGI_pmg_prefs)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_mabinogi_pmg)

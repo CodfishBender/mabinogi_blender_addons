@@ -420,10 +420,24 @@ def menu_func(self, context):
 def menu_func2(self, context):
     self.layout.operator(EXPORT_MABINOGI_frm.bl_idname, text="Mabinogi Framework (.frm)")
     
+class VIEW3D_PT_mabinogi_import_frm(bpy.types.Panel):
+    '''Import button in the 3D viewport sidebar's Mabinogi tab.'''
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Mabinogi"
+    bl_label = "Import Framework (.frm)"
+    # no header, so the buttons from each Mabinogi addon stack into one list
+    bl_options = {'HIDE_HEADER'}
+    bl_order = 0
+
+    def draw(self, context):
+        self.layout.operator(IMPORT_MABINOGI_frm.bl_idname, text="Import Framework (.frm)", icon='ARMATURE_DATA')
+
 def register():
     from bpy.utils import register_class
     register_class(IMPORT_MABINOGI_frm)
     register_class(EXPORT_MABINOGI_frm)
+    register_class(VIEW3D_PT_mabinogi_import_frm)
     bpy.types.TOPBAR_MT_file_import.append(menu_func)
     bpy.types.TOPBAR_MT_file_export.append(menu_func2)
 
@@ -432,6 +446,7 @@ def unregister():
     from bpy.utils import unregister_class
     bpy.types.TOPBAR_MT_file_import.remove(menu_func)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func2)
+    unregister_class(VIEW3D_PT_mabinogi_import_frm)
     unregister_class(IMPORT_MABINOGI_frm)
     unregister_class(EXPORT_MABINOGI_frm)
 
