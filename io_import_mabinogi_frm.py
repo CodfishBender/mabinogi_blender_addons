@@ -204,8 +204,13 @@ def mat3_to_vec_roll(mat):
     roll = math.atan2(rollmat[0][2], rollmat[2][2])
     return vec, roll
 
+# Mabinogi is Y up with models facing -Z; Blender is Z up with models facing -Y
+Y_UP_TO_Z_UP = (mathutils.Matrix.Rotation(math.radians(180), 4, 'Z') @
+                mathutils.Matrix.Rotation(math.radians(90), 4, 'X'))
+
 def load_frm(filename,
-             context):
+             context,
+             z_up=True):
     '''Read and import the FRM file.'''
     name, ext= os.path.splitext(os.path.basename(filename))
     file= open(filename, 'rb')
@@ -233,6 +238,10 @@ def load_frm(filename,
     arm_object= bpy.context.active_object
     arm_object.name= "ARM_" + name
     arm_object.location = (0,0,0)
+    # converted on the object, so bone data (used by the ani/pmg importers
+    # and the frm exporter) stays in Mabinogi's Y up space
+    if z_up:
+        arm_object.matrix_world = Y_UP_TO_Z_UP
     arm_object.data.name= arm_object.name
     bpy.ops.object.mode_set(mode='EDIT')
     bones = arm_object.data.edit_bones
@@ -340,7 +349,7 @@ def save_frm(filename,
 
     file.close()
 
-from bpy.props import StringProperty
+from bpy.props import StringProperty, BoolProperty
 
 class IMPORT_MABINOGI_frm(bpy.types.Operator):
     '''Import FRM Operator.'''
@@ -354,10 +363,16 @@ class IMPORT_MABINOGI_frm(bpy.types.Operator):
         default = "*.frm",
         options = {'HIDDEN'},
     )
+    z_up: BoolProperty(
+        name="Convert to Z Up",
+        description="Rotate the armature from Mabinogi's Y up axis to Blender's Z up",
+        default=True,
+    )
 
     def execute(self, context):
         load_frm(self.filepath,
-                 context)
+                 context,
+                 self.z_up)
         return {'FINISHED'}
 
     def invoke(self, context, event):

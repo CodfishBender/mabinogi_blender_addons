@@ -13,6 +13,7 @@ bl_info= {
 
 import os
 import struct
+import math
 
 import bpy
 import mathutils
@@ -172,9 +173,13 @@ def init_material_dict(root_path):
             mat_name = name[:-4]
             material_dict[mat_name] = dirpath
 
+# Mabinogi is Y up with models facing -Z; Blender is Z up with models facing -Y
+Y_UP_TO_Z_UP = (mathutils.Matrix.Rotation(math.radians(180), 4, 'Z') @
+                mathutils.Matrix.Rotation(math.radians(90), 4, 'X'))
 
 def load_pmg(filename,
-             context):
+             context,
+             z_up=True):
     '''Read the PMG file.'''
     print (filename)
     name, ext= os.path.splitext(os.path.basename(filename))
@@ -314,9 +319,15 @@ def load_pmg(filename,
                 ob.parent = sel_ob
                 ob.parent_type = 'OBJECT'
                 bone_M = edit_bones[pm[i].bone_name].matrix_local @ bone_space.inverted()
-                ob.matrix_world = bone_M @ pm[i].MinorMatrix
+                # stays in armature space so skinning matches; follows the armature's orientation
+                ob.matrix_world = sel_ob.matrix_world @ bone_M @ pm[i].MinorMatrix
             else:
-                ob.matrix_world = pm[i].MajorMatrix
+                if z_up:
+                    # applied to the mesh data so the object isn't left rotated
+                    bmesh.transform(Y_UP_TO_Z_UP)
+                    ob.matrix_world = Y_UP_TO_Z_UP @ pm[i].MajorMatrix @ Y_UP_TO_Z_UP.inverted()
+                else:
+                    ob.matrix_world = pm[i].MajorMatrix
             bpy.context.collection.objects.link(ob)
             #add skins
             skinList = list()
@@ -354,7 +365,7 @@ def load_pmg(filename,
 
 
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import StringProperty, CollectionProperty
+from bpy.props import StringProperty, CollectionProperty, BoolProperty
 from bpy.types import Operator, OperatorFileListElement
 class IMPORT_MABINOGI_pmg(Operator, ImportHelper):
     '''Import PMG Operator.'''
@@ -376,11 +387,18 @@ class IMPORT_MABINOGI_pmg(Operator, ImportHelper):
     )
     
     directory: StringProperty(subtype='DIR_PATH')
+
+    z_up: BoolProperty(
+        name="Convert to Z Up",
+        description="Convert from Mabinogi's Y up axis to Blender's Z up. "
+                    "Meshes imported onto a selected armature follow the armature's orientation instead",
+        default=True,
+    )
     
     def execute(self, context):
         for file in self.files:
             filepath = os.path.join(self.directory, file.name)
-            load_pmg(filepath, context)
+            load_pmg(filepath, context, self.z_up)
         return {'FINISHED'}
 
     def invoke(self, context, event):
