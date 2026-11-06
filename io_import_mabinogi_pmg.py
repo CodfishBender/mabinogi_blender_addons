@@ -508,10 +508,12 @@ def load_pmg(filename,
 
     mesh_count = 0
     pm_subgroups_count = list()
+    subgroup_names = list()
     for i in range(subgroup_count):
         subgroup_name, pmCount = struct.unpack("<64si", file.read(68))
         file.seek(0xCC * pmCount, 1)  # skip pm header
         pm_subgroups_count.append(pmCount)
+        subgroup_names.append(subgroup_name.split(b'\0')[0].decode('utf-8', errors='replace'))
         mesh_count += pmCount
     print ("mesh count", mesh_count)
 
@@ -564,12 +566,30 @@ def load_pmg(filename,
             sel_ob.select_set(False)
             print("Selected object isn't armature")
             sel_ob = None
+    # one collection per file, next to the armature when importing onto one.
+    # Subgroups are variants the game swaps between (hand poses, hair shapes
+    # for helmets, weapon positions), so only the first is shown and the rest
+    # go in a hidden child collection rather than overlapping it.
+    parent_collection = context.collection
+    if sel_ob is not None and sel_ob.users_collection:
+        parent_collection = sel_ob.users_collection[0]
+    file_name = name # name is reused for texture names below
+    file_collection = bpy.data.collections.new(file_name)
+    parent_collection.children.link(file_collection)
+    variants_collection = None
+
     prev_ob = None
     for sgi in range(len(pm_subgroups)):
         pm = pm_subgroups[sgi]
         if prev_ob is not None:
             prev_ob.select_set(False)
             prev_ob = None
+        target_collection = file_collection
+        if sgi > 0:
+            if variants_collection is None:
+                variants_collection = bpy.data.collections.new(file_name + " variants")
+                file_collection.children.link(variants_collection)
+            target_collection = variants_collection
         for i in range(len(pm)):
             #Add to blender
             print("adding mesh", pm[i].mesh_name)
@@ -650,7 +670,7 @@ def load_pmg(filename,
                     conversion = Y_UP_TO_Z_UP @ conversion
                 bmesh.transform(conversion)
                 ob.matrix_world = conversion @ pm[i].MajorMatrix @ conversion.inverted()
-            bpy.context.collection.objects.link(ob)
+            target_collection.objects.link(ob)
             #add skins
             skinList = list()
             for s in pm[i].skinArray:
@@ -678,11 +698,35 @@ def load_pmg(filename,
             bpy.ops.mesh.remove_doubles(threshold=0.1 if sel_ob is not None else 0.1 * global_scale)
             bpy.ops.object.mode_set(mode='OBJECT')
             prev_ob = ob
+        if prev_ob is None:
+            continue # empty subgroup
+        if subgroup_names[sgi]:
+            prev_ob.name = "%s_%s" % (file_name, subgroup_names[sgi])
+        elif sgi > 0:
+            prev_ob.name = "%s_%d" % (file_name, sgi)
+        else:
+            prev_ob.name = file_name
+        prev_ob.data.name = prev_ob.name
         # add armature modifier; a single one, so vertices shared by
         # several groups aren't deformed more than once
         if sel_ob is not None:
             m = prev_ob.modifiers.new("Armature", 'ARMATURE')
             m.object = sel_ob
+
+    if variants_collection is not None:
+        # hidden only after the joins above, which need visible objects
+        variants_collection.hide_render = True
+        def find_layer_collection(layer_collection):
+            if layer_collection.collection == variants_collection:
+                return layer_collection
+            for child in layer_collection.children:
+                found = find_layer_collection(child)
+                if found is not None:
+                    return found
+            return None
+        layer_collection = find_layer_collection(context.view_layer.layer_collection)
+        if layer_collection is not None:
+            layer_collection.hide_viewport = True
 
     file.close()
 

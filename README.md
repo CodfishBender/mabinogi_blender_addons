@@ -34,6 +34,12 @@ To build a character:
    They're parented and skinned to the armature.
 3. With the armature selected, import an `.ani` file from the `anim` folder.
 
+Each `.pmg` goes into its own collection, inside the armature's collection when
+imported onto one. Many files contain several subgroups: variants the game
+swaps between, such as hand poses (`fistl`, `palmr`), hair shapes (`h1` to
+`h6`) or weapon positions. Only the first is shown. The rest go in a hidden
+"variants" collection, which you can show from the Outliner.
+
 Models are converted from Mabinogi's Y-up axis to Blender's Z-up, and scaled
 to 0.01. A character comes in about 1.3 m tall. Both options can be changed
 in the import dialog.
