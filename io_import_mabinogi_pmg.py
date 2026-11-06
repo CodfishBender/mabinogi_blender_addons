@@ -12,6 +12,7 @@ bl_info= {
 }
 
 import os
+import re
 import struct
 import math
 
@@ -193,6 +194,289 @@ def find_materials_path(filename, prefs_path):
         path = parent
 
 
+# Game material definitions, read from material/_define. Each material lists
+# the textures that use it and names a render state, which holds the Direct3D 9
+# fixed function setup (texture stages, blending, alpha test, culling).
+material_defs = None # texture name (lower case) -> material attributes
+render_states = None # render state name (lower case) -> render state
+
+def read_define_xml(path):
+    raw = open(path, 'rb').read()
+    if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        return raw.decode('utf-16')
+    return raw.decode('utf-8', errors='replace')
+
+def xml_attrs(tag):
+    return dict(re.findall(r'(\w+)="([^"]*)"', tag))
+
+def init_material_defs(root_path):
+    '''Parse the definitions with regular expressions, since a few of the
+    hand edited files aren't well formed XML and the game loads them anyway.'''
+    global material_defs, render_states
+    material_defs = dict()
+    render_states = dict()
+    define_path = os.path.join(root_path, "_define")
+    for (dirpath, dirnames, filenames) in os.walk(os.path.join(define_path, "render_state")):
+        for name in filenames:
+            text = read_define_xml(os.path.join(dirpath, name))
+            header = re.search(r'<xml\b[^>]*>', text)
+            if header is None:
+                continue
+            rs = xml_attrs(header.group(0))
+            for tag in ("Blend", "AlphaTest", "Misc"):
+                found = re.search(r'<' + tag + r'\b[^>]*>', text)
+                rs[tag] = xml_attrs(found.group(0)) if found else dict()
+            rs["stages"] = [xml_attrs(t) for t in re.findall(r'<TssList\s+ColorOp[^>]*>', text)]
+            rs["samplers"] = [xml_attrs(t) for t in re.findall(r'<SsList\s+Address[^>]*>', text)]
+            render_states[rs.get("Name", name[:-4]).lower()] = rs
+    for (dirpath, dirnames, filenames) in os.walk(os.path.join(define_path, "material")):
+        for name in filenames:
+            text = read_define_xml(os.path.join(dirpath, name))
+            header = re.search(r'<xml\b[^>]*>', text)
+            if header is None:
+                continue
+            mat = xml_attrs(header.group(0))
+            for texture in re.findall(r'<TextureDesc\s+Name="([^"]*)"', text):
+                material_defs[texture.lower()] = mat
+
+def get_light_group():
+    '''Node group holding the lighting value used for D3DTA_DIFFUSE, shared by
+    every imported material so the overall brightness can be tuned in one place.'''
+    group = bpy.data.node_groups.get("Mabinogi Light")
+    if group is None:
+        group = bpy.data.node_groups.new("Mabinogi Light", 'ShaderNodeTree')
+        group.interface.new_socket("Light", in_out='OUTPUT', socket_type='NodeSocketFloat')
+        value = group.nodes.new('ShaderNodeValue')
+        value.label = "Light"
+        # the game's real lighting values aren't in the data; chosen by eye,
+        # since 0.5 (Direct3D's usual neutral) washes the "_1x" states out
+        value.outputs[0].default_value = 0.25
+        output = group.nodes.new('NodeGroupOutput')
+        output.location = (200, 0)
+        group.links.new(output.inputs[0], value.outputs[0])
+    return group
+
+class GameMaterialBuilder:
+    '''Rebuilds a render state's texture stages as shader nodes.'''
+
+    def __init__(self, material):
+        self.nodes = material.node_tree.nodes
+        self.links = material.node_tree.links
+        self.x = 0
+
+    def node(self, type, **settings):
+        n = self.nodes.new(type)
+        for k, v in settings.items():
+            setattr(n, k, v)
+        n.location = (self.x, -200 * (len(self.nodes) % 6))
+        return n
+
+    def connect(self, socket, value):
+        if isinstance(value, bpy.types.NodeSocket):
+            self.links.new(socket, value)
+        elif isinstance(value, float) and hasattr(socket.default_value, '__len__'):
+            # a grey value into a colour socket
+            socket.default_value = (value, value, value, 1.0)[:len(socket.default_value)]
+        else:
+            socket.default_value = value
+
+    def color(self, blend, a, b, fac=1.0, clamp=False):
+        n = self.node('ShaderNodeMix', data_type='RGBA', blend_type=blend, clamp_result=clamp)
+        sockets = {s.identifier: s for s in n.inputs}
+        self.connect(sockets['Factor_Float'], fac)
+        self.connect(sockets['A_Color'], a)
+        self.connect(sockets['B_Color'], b)
+        return next(s for s in n.outputs if s.identifier == 'Result_Color')
+
+    def value(self, operation, a, b=0.0, clamp=False):
+        n = self.node('ShaderNodeMath', operation=operation, use_clamp=clamp)
+        self.connect(n.inputs[0], a)
+        self.connect(n.inputs[1], b)
+        return n.outputs[0]
+
+    def scale(self, c, k, clamp):
+        return self.color('MULTIPLY', c, (k, k, k, 1.0), clamp=clamp)
+
+    def color_op(self, op, a1, a2, diffuse):
+        '''D3DTOP_* on colours; a1/a2 are (colour, alpha) pairs.'''
+        c1, c2 = a1[0], a2[0]
+        if op in ('D3DTOP_MODULATE', 'D3DTOP_MODULATE2X', 'D3DTOP_MODULATE4X'):
+            c = self.color('MULTIPLY', c1, c2, clamp=(op == 'D3DTOP_MODULATE'))
+            if op != 'D3DTOP_MODULATE':
+                c = self.scale(c, 2.0 if op == 'D3DTOP_MODULATE2X' else 4.0, True)
+            return c
+        if op == 'D3DTOP_ADD':
+            return self.color('ADD', c1, c2, clamp=True)
+        if op in ('D3DTOP_ADDSIGNED', 'D3DTOP_ADDSIGNED2X'):
+            c = self.color('ADD', c1, c2)
+            c = self.color('SUBTRACT', c, (0.5, 0.5, 0.5, 1.0), clamp=(op == 'D3DTOP_ADDSIGNED'))
+            if op == 'D3DTOP_ADDSIGNED2X':
+                c = self.scale(c, 2.0, True)
+            return c
+        if op == 'D3DTOP_SUBTRACT':
+            return self.color('SUBTRACT', c1, c2, clamp=True)
+        if op == 'D3DTOP_SELECTARG2':
+            return c2
+        if op in ('D3DTOP_BLENDDIFFUSEALPHA', 'D3DTOP_BLENDCURRENTALPHA', 'D3DTOP_BLENDTEXTUREALPHA'):
+            # arg1 * alpha + arg2 * (1 - alpha)
+            alpha = {'D3DTOP_BLENDDIFFUSEALPHA': diffuse[1],
+                     'D3DTOP_BLENDCURRENTALPHA': self.current[1],
+                     'D3DTOP_BLENDTEXTUREALPHA': self.texture[1]}[op]
+            return self.color('MIX', c2, c1, fac=alpha, clamp=True)
+        if op == 'D3DTOP_MODULATEALPHA_ADDCOLOR':
+            return self.color('ADD', c1, c2, fac=a1[1], clamp=True)
+        if op == 'D3DTOP_MODULATEINVALPHA_ADDCOLOR':
+            return self.color('ADD', c1, c2, fac=self.value('SUBTRACT', 1.0, a1[1]), clamp=True)
+        return c1 # D3DTOP_SELECTARG1 and anything not handled
+
+    def alpha_op(self, op, a1, a2):
+        '''D3DTOP_* on alphas, only the operations the game's render states use.'''
+        if op in ('D3DTOP_MODULATE', 'D3DTOP_MODULATE2X', 'D3DTOP_MODULATE4X'):
+            a = self.value('MULTIPLY', a1, a2, clamp=(op == 'D3DTOP_MODULATE'))
+            if op != 'D3DTOP_MODULATE':
+                a = self.value('MULTIPLY', a, 2.0 if op == 'D3DTOP_MODULATE2X' else 4.0, clamp=True)
+            return a
+        if op == 'D3DTOP_ADD':
+            return self.value('ADD', a1, a2, clamp=True)
+        if op == 'D3DTOP_SELECTARG2':
+            return a2
+        return a1
+
+    def build(self, mdef, rs, image, gloss_image):
+        nodes, links = self.nodes, self.links
+        nodes.clear()
+        light = self.node('ShaderNodeGroup', node_tree=get_light_group(), label="Light").outputs[0]
+        diffuse = (self.node('ShaderNodeCombineColor').outputs[0], 1.0)
+        links.new(diffuse[0].node.inputs[0], light)
+        links.new(diffuse[0].node.inputs[1], light)
+        links.new(diffuse[0].node.inputs[2], light)
+        self.x += 200
+
+        # texture coordinates for the gloss/sphere stages: the view space
+        # normal mapped onto the texture, i.e. a matcap
+        def matcap():
+            geometry = self.node('ShaderNodeNewGeometry')
+            view = self.node('ShaderNodeVectorTransform', vector_type='NORMAL', convert_from='WORLD', convert_to='CAMERA')
+            links.new(view.inputs[0], geometry.outputs['Normal'])
+            uv = self.node('ShaderNodeVectorMath', operation='MULTIPLY_ADD')
+            links.new(uv.inputs[0], view.outputs[0])
+            uv.inputs[1].default_value = (0.5, 0.5, 0.0)
+            uv.inputs[2].default_value = (0.5, 0.5, 0.0)
+            return uv.outputs[0]
+
+        # Direct3D blends the raw (sRGB encoded) texel values, while Blender
+        # decodes textures to linear, so re-encode before the stage maths
+        def raw(tex):
+            gamma = self.node('ShaderNodeGamma')
+            links.new(gamma.inputs['Color'], tex.outputs['Color'])
+            gamma.inputs['Gamma'].default_value = 1 / 2.2
+            return (gamma.outputs[0], tex.outputs['Alpha'])
+
+        main_node = None
+        regs = {'D3DTA_CURRENT': diffuse, 'D3DTA_TEMP': ((0.0, 0.0, 0.0, 1.0), 0.0)}
+        samplers = rs.get("samplers", [])
+        for i, stage in enumerate(rs["stages"]):
+            if stage.get('ColorOp', 'D3DTOP_DISABLE') == 'D3DTOP_DISABLE':
+                break
+            self.x += 250
+            coord = stage.get('TexCoord', 'Vertex')
+            sampler = samplers[i] if i < len(samplers) else dict()
+            extension = 'EXTEND' if sampler.get('AddressU') == 'D3DTADDRESS_CLAMP' else 'REPEAT'
+            if coord == 'Vertex' and i == 0 and image is not None:
+                tex = self.node('ShaderNodeTexImage', image=image, extension=extension)
+                main_node = tex
+                self.texture = raw(tex)
+            elif coord in ('Gloss', 'Sphere') and gloss_image is not None:
+                tex = self.node('ShaderNodeTexImage', image=gloss_image, extension='EXTEND')
+                links.new(tex.inputs[0], matcap())
+                self.texture = raw(tex)
+            else:
+                # no texture to sample (e.g. the shadow map): neutral grey
+                self.texture = ((0.5, 0.5, 0.5, 1.0), 1.0)
+            self.current = regs['D3DTA_CURRENT']
+            args = {'D3DTA_DIFFUSE': diffuse, 'D3DTA_TEXTURE': self.texture,
+                    'D3DTA_CURRENT': regs['D3DTA_CURRENT'], 'D3DTA_TEMP': regs['D3DTA_TEMP'],
+                    'D3DTA_SPECULAR': ((0.0, 0.0, 0.0, 1.0), 0.0),
+                    'D3DTA_TFACTOR': ((0.5, 0.5, 0.5, 1.0), 1.0)}
+            def arg(key):
+                return args.get(stage.get(key), args['D3DTA_CURRENT'])
+            c = self.color_op(stage['ColorOp'], arg('ColorArg1'), arg('ColorArg2'), diffuse)
+            a = self.alpha_op(stage.get('AlphaOp'), arg('AlphaArg1')[1], arg('AlphaArg2')[1])
+            result = stage.get('ResultArg', 'D3DTA_CURRENT')
+            regs[result if result in regs else 'D3DTA_CURRENT'] = (c, a)
+        if main_node is not None:
+            nodes.active = main_node # what solid view's texture mode shows
+
+        color, alpha = regs['D3DTA_CURRENT']
+        # back to linear for Blender
+        decode = self.node('ShaderNodeGamma')
+        self.connect(decode.inputs['Color'], color)
+        decode.inputs['Gamma'].default_value = 2.2
+        color = decode.outputs[0]
+        if mdef.get('ForceAlphaOpaque') == 'true':
+            alpha = 1.0
+        self.x += 250
+        blend = rs.get('Blend', {})
+        src, dest = blend.get('Src', 'D3DBLEND_ONE'), blend.get('Dest', 'D3DBLEND_ZERO')
+        if blend.get('Enable') != 'true':
+            src, dest = 'D3DBLEND_ONE', 'D3DBLEND_ZERO'
+        # result = colour * src + background * dest, as emission plus transparency
+        emission = self.node('ShaderNodeEmission')
+        self.connect(emission.inputs['Color'], color)
+        if src == 'D3DBLEND_SRCALPHA':
+            self.connect(emission.inputs['Strength'], alpha)
+        elif src in ('D3DBLEND_ZERO', 'D3DBLEND_DESTCOLOR'):
+            emission.inputs['Strength'].default_value = 0.0
+        dest_color = None
+        if dest == 'D3DBLEND_ONE':
+            dest_color = (1.0, 1.0, 1.0, 1.0)
+        elif dest == 'D3DBLEND_INVSRCALPHA':
+            dest_color = self.value('SUBTRACT', 1.0, alpha)
+        elif dest == 'D3DBLEND_SRCALPHA':
+            dest_color = alpha
+        elif dest == 'D3DBLEND_INVSRCCOLOR':
+            invert = self.node('ShaderNodeInvert')
+            self.connect(invert.inputs['Color'], color)
+            dest_color = invert.outputs[0]
+        if src == 'D3DBLEND_DESTCOLOR':
+            dest_color = color # multiply
+        shader = emission.outputs[0]
+        blended = dest_color is not None
+        if blended:
+            transparent = self.node('ShaderNodeBsdfTransparent')
+            self.connect(transparent.inputs['Color'], dest_color)
+            add = self.node('ShaderNodeAddShader')
+            links.new(add.inputs[0], shader)
+            links.new(add.inputs[1], transparent.outputs[0])
+            shader = add.outputs[0]
+
+        alpha_test = rs.get('AlphaTest', {})
+        if alpha_test.get('Enable') == 'true' and alpha_test.get('Func') in ('D3DCMP_GREATER', 'D3DCMP_GREATEREQUAL'):
+            ref = int(alpha_test.get('Ref', '0'), 16) / 255.0
+            passed = self.value('GREATER_THAN', alpha, ref - (0.001 if alpha_test['Func'] == 'D3DCMP_GREATEREQUAL' else 0.0))
+            hidden = self.node('ShaderNodeBsdfTransparent')
+            mix = self.node('ShaderNodeMixShader')
+            links.new(mix.inputs[0], passed)
+            links.new(mix.inputs[1], hidden.outputs[0])
+            links.new(mix.inputs[2], shader)
+            shader = mix.outputs[0]
+
+        self.x += 250
+        output = self.node('ShaderNodeOutputMaterial')
+        links.new(output.inputs['Surface'], shader)
+        return blended
+
+def build_game_material(material, mdef, rs, image, gloss_image):
+    material.use_nodes = True
+    blended = GameMaterialBuilder(material).build(mdef, rs, image, gloss_image)
+    # D3DCULL_CCW is Direct3D's default back face culling
+    material.use_backface_culling = rs.get('Misc', {}).get('CullMode') == 'D3DCULL_CCW'
+    if hasattr(material, "surface_render_method"):
+        material.surface_render_method = 'BLENDED' if blended else 'DITHERED'
+    elif hasattr(material, "blend_method"):
+        material.blend_method = 'BLEND' if blended else 'CLIP'
+
+
 # Mabinogi is Y up with models facing -Z; Blender is Z up with models facing -Y
 Y_UP_TO_Z_UP = (mathutils.Matrix.Rotation(math.radians(180), 4, 'Z') @
                 mathutils.Matrix.Rotation(math.radians(90), 4, 'X'))
@@ -200,7 +484,8 @@ Y_UP_TO_Z_UP = (mathutils.Matrix.Rotation(math.radians(180), 4, 'Z') @
 def load_pmg(filename,
              context,
              z_up=True,
-             global_scale=0.01):
+             global_scale=0.01,
+             game_materials=True):
     '''Read the PMG file.'''
     print (filename)
     name, ext= os.path.splitext(os.path.basename(filename))
@@ -256,6 +541,7 @@ def load_pmg(filename,
         materials_path = os.path.dirname(filename)
     if material_dict is None or material_dict_root != materials_path:
         init_material_dict(materials_path)
+        init_material_defs(materials_path)
 
     #find if the selected object is a an armature
     bone_space = mathutils.Matrix(((0, 1, 0, 0),
@@ -307,22 +593,32 @@ def load_pmg(filename,
                 print(image)
                 # Create new material
                 material = bpy.data.materials.new(name=name)
-                material.use_nodes = True
-                # removed in newer Blender versions
-                if hasattr(material, "shadow_method"):
-                    material.shadow_method = 'NONE'
-                if hasattr(material, "blend_method"):
-                    material.blend_method = 'OPAQUE'
-                # Add mat node
-                bsdf = material.node_tree.nodes["Principled BSDF"]
-                bsdf.inputs['Roughness'].default_value = 0
-                if image is not None:
-                    # Add tex node
-                    texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
-                    texImage.image = image
-                    # Link together
-                    material.node_tree.links.new(bsdf.inputs['Base Color'], texImage.outputs['Color'])
-                    material.node_tree.links.new(bsdf.inputs['Alpha'], texImage.outputs['Alpha'])
+                # the game's material for this texture, if there is one
+                mdef = material_defs.get(name.lower()) if game_materials and name else None
+                rs = render_states.get(mdef.get('RenderState', '').lower()) if mdef else None
+                if rs is not None:
+                    gloss_name = mdef.get('GlossTexture', '').lower()
+                    gloss_image = None
+                    if gloss_name in material_dict:
+                        gloss_image = bpy.data.images.load(material_dict[gloss_name], check_existing=True)
+                    build_game_material(material, mdef, rs, image, gloss_image)
+                else:
+                    material.use_nodes = True
+                    # removed in newer Blender versions
+                    if hasattr(material, "shadow_method"):
+                        material.shadow_method = 'NONE'
+                    if hasattr(material, "blend_method"):
+                        material.blend_method = 'OPAQUE'
+                    # Add mat node
+                    bsdf = material.node_tree.nodes["Principled BSDF"]
+                    bsdf.inputs['Roughness'].default_value = 0
+                    if image is not None:
+                        # Add tex node
+                        texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
+                        texImage.image = image
+                        # Link together
+                        material.node_tree.links.new(bsdf.inputs['Base Color'], texImage.outputs['Color'])
+                        material.node_tree.links.new(bsdf.inputs['Alpha'], texImage.outputs['Alpha'])
             else:
                 material = bpy.data.materials[name]
                 
@@ -430,6 +726,13 @@ class IMPORT_MABINOGI_pmg(Operator, ImportHelper):
         min=0.0001,
         soft_max=1.0,
     )
+
+    game_materials: BoolProperty(
+        name="Game Materials",
+        description="Recreate the game's materials (texture stages, gloss maps, blending) from "
+                    "data/material/_define. Off: a plain Principled BSDF with the texture",
+        default=True,
+    )
     
     def execute(self, context):
         if self.files:
@@ -437,7 +740,7 @@ class IMPORT_MABINOGI_pmg(Operator, ImportHelper):
         else:
             filepaths = [self.filepath]
         for filepath in filepaths:
-            load_pmg(filepath, context, self.z_up, self.scale)
+            load_pmg(filepath, context, self.z_up, self.scale, self.game_materials)
         return {'FINISHED'}
 
     def invoke(self, context, event):

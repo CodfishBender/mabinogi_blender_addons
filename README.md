@@ -45,9 +45,31 @@ for it in the game's `data/material` folder, which it finds automatically from
 the `.pmg`'s location if you import from an extracted `data` folder. You can
 also set the folder yourself in the pmg addon's preferences.
 
-Many character textures, such as hair, are greyscale, so imported models can
-look grey. The game appears to tint them at runtime with the palettes in
-`data/color`, which the importer doesn't read yet.
+## Game materials
+
+With **Game Materials** on (the default), the pmg importer recreates the game's
+materials from `data/material/_define`. Each material there lists the
+textures that use it and points to a render state, which holds the original
+Direct3D 9 setup. The importer rebuilds that as shader nodes:
+
+- The texture stages, such as texture × lighting × 2, then × gloss map × 4.
+  Gloss maps from `material/glossmap` are applied like a matcap, which gives
+  characters their soft gradient shading.
+- Alpha test cutouts, alpha blending and additive blending
+- Backface culling
+
+The result is unlit (an Emission shader), as in the game, so scene lights
+don't affect it. The lighting term is a single value in the shared
+**Mabinogi Light** node group, which sets the brightness of every imported
+material. For colours closest to the game, set the scene's
+**Color Management > View Transform** to **Standard**.
+
+Turn Game Materials off for a plain Principled BSDF with the texture, which
+reacts to Blender's lights.
+
+Many textures, such as hair, clothing and monster skins, are greyscale or
+colour masks. The game dyes them at runtime, so they come in grey or pink.
+The importer doesn't apply dye colours.
 
 ## Credits
 
