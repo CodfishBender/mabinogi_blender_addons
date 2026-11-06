@@ -77,7 +77,7 @@ def save_quaternion(file,q ):
 
 def load_lpstring(file):
     l = struct.unpack("<i", file.read(4))[0]
-    return struct.unpack("<%ds" % l, file.read(l))[0].strip(b'\0').decode('ascii')
+    return struct.unpack("<%ds" % l, file.read(l))[0].strip(b'\0').decode('utf-8', errors='replace')
 
 def load_vertex(file):
     new_v = Vertex()
@@ -120,14 +120,14 @@ def load_pmbody17(file, pm):
 def load_pm17(file):
     pm = MabinogiMesh()
     pm_size, full_name, mesh_name = struct.unpack("<i32s128s", file.read(164))
-    pm.bone_name = full_name.strip(b'\0').decode('ascii')  # todo: refactor bone_name - full_name
-    pm.mesh_name = mesh_name.strip(b'\0').decode('ascii')
+    pm.bone_name = full_name.strip(b'\0').decode('utf-8', errors='replace')  # todo: refactor bone_name - full_name
+    pm.mesh_name = mesh_name.strip(b'\0').decode('utf-8', errors='replace')
     print (pm.mesh_name, pm.bone_name)
     joint_name, state_name, norm_name, color_name = struct.unpack("32s32s32s32s", file.read(128))
     pm.MinorMatrix = load_matrix4x4(file)
     pm.MajorMatrix = load_matrix4x4(file)
     pm.partNo, _, _, texture, is_texture_mapped = struct.unpack("<iii32si", file.read(48))
-    pm.texture_name = texture.strip(b'\0').decode('ascii')
+    pm.texture_name = texture.strip(b'\0').decode('utf-8', errors='replace')
     v = load_vertex(file)
     pm.faceVertexCount, pm.faceCount, pm.stripFaceVertexCount = struct.unpack("<iii", file.read(12))
     pm.stripFaceCount, pm.vertCount, pm.skinCount = struct.unpack("<iii", file.read(12))  # todo: refactor skin - weld
@@ -258,19 +258,10 @@ def load_pmg(filename,
             #Add to blender
             print("adding mesh", pm[i].mesh_name)
             bmesh = bpy.data.meshes.new(pm[i].mesh_name)
-            #add vertices
-            bmesh.vertices.add(pm[i].vertCount)
-            for v in range(pm[i].vertCount):
-                bmesh.vertices[v].co = (pm[i].vertexArray[v].x, pm[i].vertexArray[v].y, pm[i].vertexArray[v].z)
-            #add polygons
-            bmesh.polygons.add(pm[i].faceCount)
-            for v in range(pm[i].faceCount):
-                bmesh.polygons[v].loop_start = v*3
-                bmesh.polygons[v].loop_total = 3
-            #add loops
-            bmesh.loops.add(pm[i].faceVertexCount)
-            for v in range(pm[i].faceVertexCount):
-                bmesh.loops[v].vertex_index = pm[i].vertexList[v]
+            #add vertices and triangles
+            verts = [(pm[i].vertexArray[v].x, pm[i].vertexArray[v].y, pm[i].vertexArray[v].z) for v in range(pm[i].vertCount)]
+            faces = [pm[i].vertexList[v*3:v*3+3] for v in range(pm[i].faceCount)]
+            bmesh.from_pydata(verts, [], faces)
             #add materials
             name = pm[i].texture_name
             #image = load_image(name + ".dds", os.path.dirname(filename), recursive=True, place_holder=True)
@@ -286,11 +277,14 @@ def load_pmg(filename,
                 # Create new material
                 material = bpy.data.materials.new(name=name)
                 material.use_nodes = True
-                material.shadow_method = 'NONE'
-                material.blend_method = 'OPAQUE'
+                # removed in newer Blender versions
+                if hasattr(material, "shadow_method"):
+                    material.shadow_method = 'NONE'
+                if hasattr(material, "blend_method"):
+                    material.blend_method = 'OPAQUE'
                 # Add mat node
                 bsdf = material.node_tree.nodes["Principled BSDF"]
-                bsdf.inputs[7].default_value = 0
+                bsdf.inputs['Roughness'].default_value = 0
                 # Add tex node
                 texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
                 texImage.image = image
@@ -319,8 +313,8 @@ def load_pmg(filename,
             if sel_ob is not None:
                 ob.parent = sel_ob
                 ob.parent_type = 'OBJECT'
-                bone_M = edit_bones[pm[i].bone_name].matrix_local * bone_space.inverted()
-                ob.matrix_world = bone_M * pm[i].MinorMatrix
+                bone_M = edit_bones[pm[i].bone_name].matrix_local @ bone_space.inverted()
+                ob.matrix_world = bone_M @ pm[i].MinorMatrix
             else:
                 ob.matrix_world = pm[i].MajorMatrix
             bpy.context.collection.objects.link(ob)
@@ -350,11 +344,11 @@ def load_pmg(filename,
             bpy.ops.mesh.remove_doubles(threshold=0.1)
             bpy.ops.object.mode_set(mode='OBJECT')
             prev_ob = ob
-        # add armature modifiers
-        for v in prev_ob.vertex_groups:
-            m = prev_ob.modifiers.new(v.name, 'ARMATURE')
+        # add armature modifier; a single one, so vertices shared by
+        # several groups aren't deformed more than once
+        if sel_ob is not None:
+            m = prev_ob.modifiers.new("Armature", 'ARMATURE')
             m.object = sel_ob
-            m.vertex_group = v.name
 
     file.close()
 

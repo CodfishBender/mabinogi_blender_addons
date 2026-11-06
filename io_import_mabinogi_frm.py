@@ -1,8 +1,8 @@
 bl_info= {
     "name": "Import Mabinogi Framework",
     "author": "Tachiorz",
-    "version": (0, 3),
-    "blender": (2, 5, 7),
+    "version": (0, 4),
+    "blender": (2, 80, 0),
     "location": "File > Import > Mabinogi Framework (.frm)",
     "description": "Imports a Mabinogi Framework",
     "warning": "",
@@ -49,6 +49,9 @@ class MabinogiHash():
     keys = list()
     hash1 = 0
     hash2 = 0
+
+    def __init__(self):
+        self.keys = list()
 
     def ExportQuerySize(self):
         self.size2 = 2*self.count2
@@ -172,9 +175,7 @@ def save_matrix4x4(file, m):
     return m
     
 def load_quaternion(file):
-    q = mathutils.Quaternion()
-    q[0:5] = list(struct.unpack("<4f", file.read(16)))
-    return q
+    return mathutils.Quaternion(struct.unpack("<4f", file.read(16)))
 
 def save_quaternion(file,q ):
     [file.write(struct.pack("<f", q[i])) for i in range(4)]
@@ -192,14 +193,14 @@ def vec_roll_to_mat3(vec, roll):
         updown = 1 if target.dot(nor) > 0 else -1
         bMatrix = mathutils.Matrix.Scale(updown, 3)
     rMatrix = mathutils.Matrix.Rotation(roll, 3, nor)
-    mat = rMatrix * bMatrix
+    mat = rMatrix @ bMatrix
     return mat
 
 def mat3_to_vec_roll(mat):
     vec = mat.col[1]
     vecmat = vec_roll_to_mat3(mat.col[1], 0)
     vecmatinv = vecmat.inverted()
-    rollmat = vecmatinv * mat
+    rollmat = vecmatinv @ mat
     roll = math.atan2(rollmat[0][2], rollmat[2][2])
     return vec, roll
 
@@ -235,7 +236,7 @@ def load_frm(filename,
     arm_object.data.name= arm_object.name
     bpy.ops.object.mode_set(mode='EDIT')
     bones = arm_object.data.edit_bones
-    for b in bones:
+    for b in list(bones):
         bones.remove(b)
     bone_space = mathutils.Matrix(((0, 1, 0, 0),
                                    (0, 0, 1, 0),
@@ -247,11 +248,11 @@ def load_frm(filename,
         bone[b].GlobalToLocal = load_matrix4x4(file)
         bone[b].LocalToGlobal = load_matrix4x4(file)
         bone[b].Link = load_matrix4x4(file)
-        bone[b].name, bone[b].boneid, bone[b].parentid, empty = struct.unpack("<32sbbh", file.read(36))
-        bone[b].name = bone[b].name.decode(encoding="ascii").strip('\x00').strip(' ')
+        bone[b].name, bone[b].boneid, bone[b].parentid, empty = struct.unpack("<32sBBh", file.read(36))
+        bone[b].name = bone[b].name.strip(b'\x00').decode("utf-8", errors="replace").strip(' ')
         bone[b].quat1 = load_quaternion(file)
         bone[b].quat2 = load_quaternion(file)
-        mat = bone[b].LocalToGlobal * bone_space
+        mat = bone[b].LocalToGlobal @ bone_space
         pos = mat.to_translation()
         axis, roll = mat3_to_vec_roll(mat.to_3x3())
         nb = bones.new(str(b) + "__" + bone[b].name)
@@ -259,9 +260,16 @@ def load_frm(filename,
         nb.tail = pos + axis
         nb.roll = roll
         nb.use_connect = False
-        if bone[b].parentid != -1:
-            nb.parent = bone[bone[b].parentid].nb
         bone[b].nb = nb
+    # parents can refer to bones further down the list, so link them afterwards
+    for b in range(bones_count):
+        parentid = bone[b].parentid
+        if parentid == 255: # no parent
+            continue
+        if parentid >= bones_count:
+            print("Bone %s has invalid parent id %d, leaving it unparented" % (bone[b].name, parentid))
+            continue
+        bone[b].nb.parent = bone[parentid].nb
     bpy.ops.object.mode_set(mode='OBJECT')
     file.close()
 
@@ -341,8 +349,8 @@ class IMPORT_MABINOGI_frm(bpy.types.Operator):
     bl_description= "Import a Mabinogi Framework file"
     bl_options= {'REGISTER', 'UNDO'}
 
-    filepath= StringProperty(name="File Path", description="Filepath used for importing the FRM file", maxlen=1024, default="")
-    filter_glob = StringProperty(
+    filepath: StringProperty(name="File Path", description="Filepath used for importing the FRM file", maxlen=1024, default="", subtype='FILE_PATH')
+    filter_glob: StringProperty(
         default = "*.frm",
         options = {'HIDDEN'},
     )
@@ -364,7 +372,11 @@ class EXPORT_MABINOGI_frm(bpy.types.Operator):
     bl_description= "Export a Mabinogi Framework file"
     bl_options= {'REGISTER', 'UNDO'}
 
-    filepath= StringProperty(name="File Path", description="Filepath used for exporting the FRM file", maxlen=1024, default="")
+    filepath: StringProperty(name="File Path", description="Filepath used for exporting the FRM file", maxlen=1024, default="", subtype='FILE_PATH')
+    filter_glob: StringProperty(
+        default = "*.frm",
+        options = {'HIDDEN'},
+    )
 
     def execute(self, context):
         save_frm(self.filepath,
@@ -383,17 +395,19 @@ def menu_func2(self, context):
     self.layout.operator(EXPORT_MABINOGI_frm.bl_idname, text="Mabinogi Framework (.frm)")
     
 def register():
-    bpy.utils.register_module(__name__)
-
-    bpy.types.INFO_MT_file_import.append(menu_func)
-    bpy.types.INFO_MT_file_export.append(menu_func2)
+    from bpy.utils import register_class
+    register_class(IMPORT_MABINOGI_frm)
+    register_class(EXPORT_MABINOGI_frm)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func)
+    bpy.types.TOPBAR_MT_file_export.append(menu_func2)
 
 
 def unregister():
-    bpy.utils.unregister_module(__name__)
-
-    bpy.types.INFO_MT_file_import.remove(menu_func)
-    bpy.types.INFO_MT_file_export.remove(menu_func2)
+    from bpy.utils import unregister_class
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func)
+    bpy.types.TOPBAR_MT_file_export.remove(menu_func2)
+    unregister_class(IMPORT_MABINOGI_frm)
+    unregister_class(EXPORT_MABINOGI_frm)
 
 if __name__ == "__main__":
     register()

@@ -1,8 +1,8 @@
 bl_info= {
     "name": "Import Mabinogi Pleione Animation",
     "author": "Tachiorz",
-    "version": (0, 1),
-    "blender": (2, 5, 7),
+    "version": (0, 2),
+    "blender": (2, 80, 0),
     "location": "File > Import > Mabinogi Animation (.ani)",
     "description": "Imports a Mabinogi Animation file",
     "warning": "",
@@ -33,6 +33,10 @@ class MabinogiAnimation:
     boneCount = 0
     bone = list() # of MabinogiData()
     unknown_ani = list()
+
+    def __init__(self):
+        self.bone = list()
+        self.unknown_ani = list()
 
 def load_ani(filename, context):
     name, ext= os.path.splitext(os.path.basename(filename))
@@ -69,13 +73,12 @@ def load_ani(filename, context):
 
     #find if the selected object is a an armature
     armature = None
-    sel_ob = None
-    if len(context.selected_objects) > 0:
-        sel_ob = context.selected_objects[0]
-        if type(sel_ob.data) == bpy.types.Armature : armature = sel_ob.data
-        else :
-            print("No armature selected")
-            return
+    sel_ob = context.active_object
+    if sel_ob is not None and sel_ob.type == 'ARMATURE':
+        armature = sel_ob.data
+    else:
+        print("No armature selected")
+        return
     if len(armature.bones) != ani.boneCount:
         print("Bone count doesn't match")
     sel_ob.animation_data_create()
@@ -88,41 +91,49 @@ def load_ani(filename, context):
     for i in range(len(pb)):
         bone_id = int(pb[i].name[:pb[i].name.index('__')])
         pose_bones[bone_id] = pb[i]
-        edit_bones[bone_id] = eb[i]
+        edit_bones[bone_id] = pb[i].bone
     bone_space = mathutils.Matrix(((0, 1, 0, 0),
                                    (0, 0, 1, 0),
                                    (1, 0, 0, 0),
                                    (0, 0, 0, 1)))
     for b in range(ani.boneCount):
+        prev_quat = None
         for f in range(ani.bone[b].mDataCount):
-            context.scene.frame_set(ani.bone[b].frames[f].mTime/50)
+            frame = ani.bone[b].frames[f].mTime/50
             pos = ani.bone[b].frames[f].move[:3]
             quat = mathutils.Quaternion(ani.bone[b].frames[f].roto)
-            mat = mathutils.Matrix.Translation(pos) * quat.to_matrix().to_4x4()
-            link = edit_bones[b].matrix_local * bone_space.inverted()
+            mat = mathutils.Matrix.Translation(pos) @ quat.to_matrix().to_4x4()
+            link = edit_bones[b].matrix_local @ bone_space.inverted()
             if edit_bones[b].parent is not None:
-                parent_link = edit_bones[b].parent.matrix_local * bone_space.inverted()
-                link = parent_link.inverted() * link
-            mat *= bone_space
-            link *= bone_space
-            pose_bones[b].matrix_basis = link.inverted() * mat
-            pose_bones[b].keyframe_insert("rotation_quaternion")
-            pose_bones[b].keyframe_insert("location")
+                parent_link = edit_bones[b].parent.matrix_local @ bone_space.inverted()
+                link = parent_link.inverted() @ link
+            mat = mat @ bone_space
+            link = link @ bone_space
+            pose_bones[b].matrix_basis = link.inverted() @ mat
+            # keep quaternion sign consistent between keys, otherwise
+            # interpolation passes through a degenerate rotation
+            if prev_quat is not None:
+                q = pose_bones[b].rotation_quaternion.copy()
+                q.make_compatible(prev_quat)
+                pose_bones[b].rotation_quaternion = q
+            prev_quat = pose_bones[b].rotation_quaternion.copy()
+            pose_bones[b].keyframe_insert("rotation_quaternion", frame=frame)
+            pose_bones[b].keyframe_insert("location", frame=frame)
             #bpy.context.scene.update()
 
 
 from bpy.props import StringProperty
 
-class IMPORT_MABINOGI_pmg(bpy.types.Operator):
-    '''Import PMG Operator.'''
+class IMPORT_MABINOGI_ani(bpy.types.Operator):
+    '''Import ANI Operator.'''
     bl_idname= "import.ani"
     bl_label= "Import ANI"
     bl_description= "Import a Mabinogi Animation file"
     bl_options= {'REGISTER', 'UNDO'}
 
-    filepath= StringProperty(name="File Path", description="Filepath used for importing the ANI file", maxlen=1024, default="")
+    filepath: StringProperty(name="File Path", description="Filepath used for importing the ANI file", maxlen=1024, default="", subtype='FILE_PATH')
 
-    filter_glob = StringProperty(
+    filter_glob: StringProperty(
         default = "*.ani",
         options = {'HIDDEN'},
     )
@@ -138,18 +149,18 @@ class IMPORT_MABINOGI_pmg(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
 def menu_func_mabinogi_ani(self, context):
-    self.layout.operator(IMPORT_MABINOGI_pmg.bl_idname, text="Mabinogi Animation (.ani)")
+    self.layout.operator(IMPORT_MABINOGI_ani.bl_idname, text="Mabinogi Animation (.ani)")
 
 def register():
-    bpy.utils.register_module(__name__)
-
-    bpy.types.INFO_MT_file_import.append(menu_func_mabinogi_ani)
+    from bpy.utils import register_class
+    register_class(IMPORT_MABINOGI_ani)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_mabinogi_ani)
 
 
 def unregister():
-    bpy.utils.unregister_module(__name__)
-
-    bpy.types.INFO_MT_file_import.remove(menu_func_mabinogi_ani)
+    from bpy.utils import unregister_class
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_mabinogi_ani)
+    unregister_class(IMPORT_MABINOGI_ani)
 
 if __name__ == "__main__":
     register()
