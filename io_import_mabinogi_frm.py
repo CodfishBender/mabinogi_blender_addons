@@ -388,6 +388,9 @@ class IMPORT_MABINOGI_frm(bpy.types.Operator):
 
     def invoke(self, context, event):
         wm= context.window_manager
+        # file dropped onto the window: only ask for the import options
+        if self.properties.is_property_set("filepath"):
+            return wm.invoke_props_dialog(self)
         wm.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -433,11 +436,28 @@ class VIEW3D_PT_mabinogi_import_frm(bpy.types.Panel):
     def draw(self, context):
         self.layout.operator(IMPORT_MABINOGI_frm.bl_idname, text="Import Framework (.frm)", icon='ARMATURE_DATA')
 
+# drag and drop import, Blender 4.2+
+if hasattr(bpy.types, "FileHandler"):
+    class MABINOGI_FH_frm(bpy.types.FileHandler):
+        bl_idname = "MABINOGI_FH_frm"
+        bl_label = "Mabinogi Framework"
+        bl_import_operator = "import.frm"
+        bl_file_extensions = ".frm"
+
+        @classmethod
+        def poll_drop(cls, context):
+            from bpy_extras.io_utils import poll_file_object_drop
+            return poll_file_object_drop(context)
+else:
+    MABINOGI_FH_frm = None
+
 def register():
     from bpy.utils import register_class
     register_class(IMPORT_MABINOGI_frm)
     register_class(EXPORT_MABINOGI_frm)
     register_class(VIEW3D_PT_mabinogi_import_frm)
+    if MABINOGI_FH_frm is not None:
+        register_class(MABINOGI_FH_frm)
     bpy.types.TOPBAR_MT_file_import.append(menu_func)
     bpy.types.TOPBAR_MT_file_export.append(menu_func2)
 
@@ -446,6 +466,8 @@ def unregister():
     from bpy.utils import unregister_class
     bpy.types.TOPBAR_MT_file_import.remove(menu_func)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func2)
+    if MABINOGI_FH_frm is not None:
+        unregister_class(MABINOGI_FH_frm)
     unregister_class(VIEW3D_PT_mabinogi_import_frm)
     unregister_class(IMPORT_MABINOGI_frm)
     unregister_class(EXPORT_MABINOGI_frm)

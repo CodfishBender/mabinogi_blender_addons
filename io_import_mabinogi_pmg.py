@@ -407,13 +407,19 @@ class IMPORT_MABINOGI_pmg(Operator, ImportHelper):
     )
     
     def execute(self, context):
-        for file in self.files:
-            filepath = os.path.join(self.directory, file.name)
+        if self.files:
+            filepaths = [os.path.join(self.directory, file.name) for file in self.files]
+        else:
+            filepaths = [self.filepath]
+        for filepath in filepaths:
             load_pmg(filepath, context, self.z_up, self.scale)
         return {'FINISHED'}
 
     def invoke(self, context, event):
         wm= context.window_manager
+        # file dropped onto the window: only ask for the import options
+        if self.properties.is_property_set("filepath"):
+            return wm.invoke_props_dialog(self)
         wm.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -450,6 +456,21 @@ class VIEW3D_PT_mabinogi_import_pmg(bpy.types.Panel):
     def draw(self, context):
         self.layout.operator(IMPORT_MABINOGI_pmg.bl_idname, text="Import Mesh Group (.pmg)", icon='MESH_DATA')
 
+# drag and drop import, Blender 4.2+
+if hasattr(bpy.types, "FileHandler"):
+    class MABINOGI_FH_pmg(bpy.types.FileHandler):
+        bl_idname = "MABINOGI_FH_pmg"
+        bl_label = "Mabinogi Mesh Group"
+        bl_import_operator = "import.pmg"
+        bl_file_extensions = ".pmg"
+
+        @classmethod
+        def poll_drop(cls, context):
+            from bpy_extras.io_utils import poll_file_object_drop
+            return poll_file_object_drop(context)
+else:
+    MABINOGI_FH_pmg = None
+
 def register():
     from bpy.utils import register_class
     global material_dict
@@ -457,11 +478,15 @@ def register():
     register_class(IMPORT_MABINOGI_pmg)
     register_class(IMPORT_MABINOGI_pmg_prefs)
     register_class(VIEW3D_PT_mabinogi_import_pmg)
+    if MABINOGI_FH_pmg is not None:
+        register_class(MABINOGI_FH_pmg)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_mabinogi_pmg)
 
 
 def unregister():
     from bpy.utils import unregister_class
+    if MABINOGI_FH_pmg is not None:
+        unregister_class(MABINOGI_FH_pmg)
     unregister_class(VIEW3D_PT_mabinogi_import_pmg)
     unregister_class(IMPORT_MABINOGI_pmg)
     unregister_class(IMPORT_MABINOGI_pmg_prefs)

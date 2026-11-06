@@ -144,6 +144,9 @@ class IMPORT_MABINOGI_ani(bpy.types.Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        # file dropped onto the window: nothing to ask, import straight away
+        if self.properties.is_property_set("filepath"):
+            return self.execute(context)
         wm= context.window_manager
         wm.fileselect_add(self)
         return {'RUNNING_MODAL'}
@@ -164,16 +167,35 @@ class VIEW3D_PT_mabinogi_import_ani(bpy.types.Panel):
     def draw(self, context):
         self.layout.operator(IMPORT_MABINOGI_ani.bl_idname, text="Import Animation (.ani)", icon='ACTION')
 
+# drag and drop import, Blender 4.2+
+if hasattr(bpy.types, "FileHandler"):
+    class MABINOGI_FH_ani(bpy.types.FileHandler):
+        bl_idname = "MABINOGI_FH_ani"
+        bl_label = "Mabinogi Animation"
+        bl_import_operator = "import.ani"
+        bl_file_extensions = ".ani"
+
+        @classmethod
+        def poll_drop(cls, context):
+            from bpy_extras.io_utils import poll_file_object_drop
+            return poll_file_object_drop(context)
+else:
+    MABINOGI_FH_ani = None
+
 def register():
     from bpy.utils import register_class
     register_class(IMPORT_MABINOGI_ani)
     register_class(VIEW3D_PT_mabinogi_import_ani)
+    if MABINOGI_FH_ani is not None:
+        register_class(MABINOGI_FH_ani)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_mabinogi_ani)
 
 
 def unregister():
     from bpy.utils import unregister_class
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_mabinogi_ani)
+    if MABINOGI_FH_ani is not None:
+        unregister_class(MABINOGI_FH_ani)
     unregister_class(VIEW3D_PT_mabinogi_import_ani)
     unregister_class(IMPORT_MABINOGI_ani)
 
