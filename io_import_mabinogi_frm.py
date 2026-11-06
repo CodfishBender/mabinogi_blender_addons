@@ -210,7 +210,8 @@ Y_UP_TO_Z_UP = (mathutils.Matrix.Rotation(math.radians(180), 4, 'Z') @
 
 def load_frm(filename,
              context,
-             z_up=True):
+             z_up=True,
+             scale=0.01):
     '''Read and import the FRM file.'''
     name, ext= os.path.splitext(os.path.basename(filename))
     file= open(filename, 'rb')
@@ -239,9 +240,11 @@ def load_frm(filename,
     arm_object.name= "ARM_" + name
     arm_object.location = (0,0,0)
     # converted on the object, so bone data (used by the ani/pmg importers
-    # and the frm exporter) stays in Mabinogi's Y up space
+    # and the frm exporter) stays in Mabinogi's Y up space and units
+    conversion = mathutils.Matrix.Scale(scale, 4)
     if z_up:
-        arm_object.matrix_world = Y_UP_TO_Z_UP
+        conversion = Y_UP_TO_Z_UP @ conversion
+    arm_object.matrix_world = conversion
     arm_object.data.name= arm_object.name
     bpy.ops.object.mode_set(mode='EDIT')
     bones = arm_object.data.edit_bones
@@ -349,7 +352,7 @@ def save_frm(filename,
 
     file.close()
 
-from bpy.props import StringProperty, BoolProperty
+from bpy.props import StringProperty, BoolProperty, FloatProperty
 
 class IMPORT_MABINOGI_frm(bpy.types.Operator):
     '''Import FRM Operator.'''
@@ -368,11 +371,19 @@ class IMPORT_MABINOGI_frm(bpy.types.Operator):
         description="Rotate the armature from Mabinogi's Y up axis to Blender's Z up",
         default=True,
     )
+    scale: FloatProperty(
+        name="Scale",
+        description="Scale applied to the armature",
+        default=0.01,
+        min=0.0001,
+        soft_max=1.0,
+    )
 
     def execute(self, context):
         load_frm(self.filepath,
                  context,
-                 self.z_up)
+                 self.z_up,
+                 self.scale)
         return {'FINISHED'}
 
     def invoke(self, context, event):

@@ -179,7 +179,8 @@ Y_UP_TO_Z_UP = (mathutils.Matrix.Rotation(math.radians(180), 4, 'Z') @
 
 def load_pmg(filename,
              context,
-             z_up=True):
+             z_up=True,
+             global_scale=0.01):
     '''Read the PMG file.'''
     print (filename)
     name, ext= os.path.splitext(os.path.basename(filename))
@@ -322,12 +323,12 @@ def load_pmg(filename,
                 # stays in armature space so skinning matches; follows the armature's orientation
                 ob.matrix_world = sel_ob.matrix_world @ bone_M @ pm[i].MinorMatrix
             else:
+                # applied to the mesh data so the object isn't left rotated/scaled
+                conversion = mathutils.Matrix.Scale(global_scale, 4)
                 if z_up:
-                    # applied to the mesh data so the object isn't left rotated
-                    bmesh.transform(Y_UP_TO_Z_UP)
-                    ob.matrix_world = Y_UP_TO_Z_UP @ pm[i].MajorMatrix @ Y_UP_TO_Z_UP.inverted()
-                else:
-                    ob.matrix_world = pm[i].MajorMatrix
+                    conversion = Y_UP_TO_Z_UP @ conversion
+                bmesh.transform(conversion)
+                ob.matrix_world = conversion @ pm[i].MajorMatrix @ conversion.inverted()
             bpy.context.collection.objects.link(ob)
             #add skins
             skinList = list()
@@ -352,7 +353,8 @@ def load_pmg(filename,
             context.view_layer.objects.active = ob
             bpy.ops.object.join()
             bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.remove_doubles(threshold=0.1)
+            # mesh data is only scaled when not imported onto an armature
+            bpy.ops.mesh.remove_doubles(threshold=0.1 if sel_ob is not None else 0.1 * global_scale)
             bpy.ops.object.mode_set(mode='OBJECT')
             prev_ob = ob
         # add armature modifier; a single one, so vertices shared by
@@ -365,7 +367,7 @@ def load_pmg(filename,
 
 
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import StringProperty, CollectionProperty, BoolProperty
+from bpy.props import StringProperty, CollectionProperty, BoolProperty, FloatProperty
 from bpy.types import Operator, OperatorFileListElement
 class IMPORT_MABINOGI_pmg(Operator, ImportHelper):
     '''Import PMG Operator.'''
@@ -394,11 +396,20 @@ class IMPORT_MABINOGI_pmg(Operator, ImportHelper):
                     "Meshes imported onto a selected armature follow the armature's orientation instead",
         default=True,
     )
+
+    scale: FloatProperty(
+        name="Scale",
+        description="Scale applied to the meshes. "
+                    "Meshes imported onto a selected armature follow the armature's scale instead",
+        default=0.01,
+        min=0.0001,
+        soft_max=1.0,
+    )
     
     def execute(self, context):
         for file in self.files:
             filepath = os.path.join(self.directory, file.name)
-            load_pmg(filepath, context, self.z_up)
+            load_pmg(filepath, context, self.z_up, self.scale)
         return {'FINISHED'}
 
     def invoke(self, context, event):
